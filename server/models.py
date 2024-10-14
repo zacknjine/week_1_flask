@@ -1,64 +1,89 @@
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import MetaData, ForeignKey
-from sqlalchemy.orm import relationship, validates
-from sqlalchemy.ext.associationproxy import association_proxy
-from sqlalchemy_serializer import SerializerMixin
+#!/usr/bin/env python3
 
-metadata = MetaData(naming_convention={
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-})
+import os
+from flask import Flask, request, make_response, jsonify
+from flask_migrate import Migrate
+from models import db, Hero, Power, HeroPower
 
-db = SQLAlchemy(metadata=metadata)
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATABASE_URI = os.getenv("DB_URI", f"sqlite:///{os.path.join(BASE_DIR, 'app.db')}")
 
-class Hero(db.Model, SerializerMixin):
-    __tablename__ = 'heroes'
+app = Flask(__name__)does
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URI
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.json.compact = False
 
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String, nullable=False)
-    super_name = db.Column(db.String, nullable=False)
-    hero_powers = relationship('HeroPower', backref='hero', cascade="all, delete-orphan")
-    powers = association_proxy('hero_powers', 'power')
-    serialize_rules = ('-hero_powers.hero',)
+migrate = Migrate(app, db)
+db.init_app(app)
 
-    def __repr__(self):
-        return f'<Hero {self.id}>'
+@app.route('/')
+def index():
+    return '<h1>Code Challenge</h1>'
 
-class Power(db.Model, SerializerMixin):
-    __tablename__ = 'powers'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String, nullable=False)
-    description = db.Column(db.String, nullable=False)
-    hero_powers = relationship('HeroPower', backref='power', cascade="all, delete-orphan")
-    heroes = association_proxy('hero_powers', 'hero')
-    serialize_rules = ('-hero_powers.power',)
+@app.route('/heroes')
+def get_heroes():
+    heroes = [
+        {"id": hero.id, "name": hero.name, "super_name": hero.super_name}
+        for hero in Hero.query.all()
+    ]
+    return make_response(jsonify(heroes), 200)
 
-    @validates('description')
-    def validate_description(self, key, description):
+@app.route('/heroes/<int:id>')
+def get_hero_by_id(id):
+    hero = Hero.query.filter_by(id=id).first()
+    if hero:
+        return make_response(hero.to_dict(), 200)
+    return make_response({"error": "Hero not found"}, 404)
+
+@app.route('/powers')
+def get_powers():
+    powers = [
+        {"id": power.id, "name": power.name, "description": power.description}
+        for power in Power.query.all()
+    ]
+    return make_response(jsonify(powers), 200)
+
+@app.route('/powers/<int:id>', methods=['GET', 'PATCH'])
+def handle_power_by_id(id):
+    power = Power.query.filter_by(id=id).first()
+    if not power:
+        return make_response({"error": "Power not found"}, 404)
+
+    if request.method == 'GET':
+        return make_response(power.to_dict(), 200)
+
+    if request.method == 'PATCH':
+        data = request.json
+        description = data.get('description', '')
         if len(description) < 20:
-            raise ValueError("Description must be at least 20 characters long.")
-        return description
+            return make_response({"errors": ["validation errors"]}, 400)
 
-    def __repr__(self):
-        return f'<Power {self.id}>'
+        for key, value in data.items():
+            setattr(power, key, value)
 
-class HeroPower(db.Model, SerializerMixin):
-    __tablename__ = 'hero_powers'
+        db.session.commit()
+        return make_response(power.to_dict(), 200)
 
-    id = db.Column(db.Integer, primary_key=True)
-    strength = db.Column(db.String, nullable=False)
-    hero_id = db.Column(db.Integer, ForeignKey('heroes.id'), nullable=False)
-    power_id = db.Column(db.Integer, ForeignKey('powers.id'), nullable=False)
-    hero = relationship('Hero', backref='hero_power_relationship')
-    power = relationship('Power', backref='power_hero_relationship')
-    serialize_rules = ('-hero.hero_powers', '-power.hero_powers')
-    
-    @validates('strength')
-    def validate_strength(self, key, strength):
-        allowed_strengths = ['Strong', 'Weak', 'Average']
-        if strength not in allowed_strengths:
-            raise ValueError(f"Strength must be one of {allowed_strengths}")
-        return strength
+@app.route('/hero_powers', methods=['GET', 'POST'])
+def handle_hero_powers():
+    if request.method == 'GET':
+        hero_powers = [hp.to_dict() for hp in HeroPower.query.all()]
+        return make_response(jsonify(hero_powers), 200)
 
-    def __repr__(self):
-        return f'<HeroPower {self.id}>'
+    if request.method == 'POST':
+        data = request.json
+        strength = data.get('strength')
+        if strength not in ['Strong', 'Weak', 'Average']:
+            return make_response({"errors": ["validation errors"]}, 400)
+
+        new_hero_power = HeroPower(
+            strength=strength,
+            power_id=data.get('power_id'),
+            hero_id=data.get('hero_id')
+        )
+        db.session.add(new_hero_power)
+        db.session.commit()
+        return make_response(new_hero_power.to_dict(), 200)
+
+if __name__ == '__main__':
+    app.run(port=5555, debug=True)
